@@ -2,6 +2,12 @@
 
 Find and remove unused Firestore composite indexes by statically scanning your TypeScript codebase.
 
+## Origin story
+
+![Claude Code warning that firestore.indexes.json is too large](motivation.png)
+
+This warning — every single time — is what finally motivated building this tool.
+
 ## Why
 
 Firestore charges for index storage and — more importantly — maintains every composite index on every write. As projects grow, `firestore.indexes.json` accumulates indexes from deprecated features, renamed collections, and refactored queries. This tool identifies which ones are actually needed.
