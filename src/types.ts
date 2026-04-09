@@ -25,6 +25,9 @@ export interface ExtractedQuery {
   isCollectionGroup: boolean;
   whereClauses: WhereClause[];
   orderByClauses: OrderByClause[];
+  /** Constraints that are conditionally applied (e.g. inside `if` blocks, ternary spreads) */
+  conditionalWhereClauses?: WhereClause[];
+  conditionalOrderByClauses?: OrderByClause[];
   sourceFile: string;
   sourceLine: number;
 }

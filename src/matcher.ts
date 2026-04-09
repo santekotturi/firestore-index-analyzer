@@ -84,15 +84,62 @@ function indexCoversQuery(index: IndexEntry, query: ExtractedQuery): boolean {
   return true;
 }
 
+/**
+ * Returns true if `index` could be required by `query` in any of its
+ * possible runtime instantiations (static form + all subsets of conditional
+ * constraints).
+ */
+function matchesQuery(index: IndexEntry, query: ExtractedQuery): boolean {
+  // Fast path: static form
+  if (queryNeedsIndex(query) && indexCoversQuery(index, query)) return true;
+
+  const cw = query.conditionalWhereClauses ?? [];
+  const co = query.conditionalOrderByClauses ?? [];
+  if (cw.length === 0 && co.length === 0) return false;
+
+  const totalConditional = cw.length + co.length;
+
+  // If there are too many conditionals, just try the "all included" superset
+  // rather than enumerating all 2^N combinations.
+  if (totalConditional > 12) {
+    const virtual: ExtractedQuery = {
+      ...query,
+      whereClauses: [...query.whereClauses, ...cw],
+      orderByClauses: [...query.orderByClauses, ...co],
+    };
+    return queryNeedsIndex(virtual) && indexCoversQuery(index, virtual);
+  }
+
+  // Try every non-empty subset of conditional constraints (2^N - 1 combinations).
+  const combinations = 1 << totalConditional;
+  for (let mask = 1; mask < combinations; mask++) {
+    const extraWheres = cw.filter((_, i) => (mask >> i) & 1);
+    const extraOrderBys = co.filter((_, i) => (mask >> (cw.length + i)) & 1);
+    const virtual: ExtractedQuery = {
+      ...query,
+      whereClauses: [...query.whereClauses, ...extraWheres],
+      orderByClauses: [...query.orderByClauses, ...extraOrderBys],
+    };
+    if (queryNeedsIndex(virtual) && indexCoversQuery(index, virtual)) return true;
+  }
+
+  return false;
+}
+
 export function matchIndexes(
   indexes: IndexEntry[],
   queries: ExtractedQuery[],
 ): MatchResult[] {
-  // Only consider queries that actually need a composite index
-  const indexableQueries = queries.filter(queryNeedsIndex);
+  // Include static queries that need an index AND dynamic queries that have
+  // conditional constraints (they may need an index in some instantiation).
+  const candidates = queries.filter(q =>
+    queryNeedsIndex(q) ||
+    (q.conditionalWhereClauses?.length ?? 0) > 0 ||
+    (q.conditionalOrderByClauses?.length ?? 0) > 0,
+  );
 
   return indexes.map(index => {
-    const matchedQueries = indexableQueries.filter(q => indexCoversQuery(index, q));
+    const matchedQueries = candidates.filter(q => matchesQuery(index, q));
     const status: IndexStatus = matchedQueries.length > 0 ? 'used' : 'unused';
     return { index, status, matchedQueries };
   });
