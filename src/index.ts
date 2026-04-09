@@ -57,7 +57,7 @@ program
     'Where to write report.md',
     join(process.cwd(), 'report.md'),
   )
-  .option('--purge', 'Remove unused indexes from firestore.indexes.json in place', false)
+  .option('--dangerously-purge', 'Remove unused indexes from firestore.indexes.json in place', false)
   .option('--verbose', 'Show matched queries for each used index', false)
   .parse(process.argv);
 
@@ -66,7 +66,7 @@ const opts = program.opts<{
   scan?: string;
   indexes?: string;
   output: string;
-  purge: boolean;
+  dangerouslyPurge: boolean;
   verbose: boolean;
 }>();
 
@@ -130,8 +130,8 @@ const { indexes } = loadIndexes(indexesPath);
 console.log('Matching ...\n');
 const results = matchIndexes(indexes, queries);
 
-printReport(results, totalFiles, queries.length, dirStats, opts.verbose, opts.output);
+printReport(results, queries, totalFiles, dirStats, opts.verbose, opts.output);
 
-if (opts.purge) {
+if (opts.dangerouslyPurge) {
   purgeUnusedIndexes(indexesPath, results);
 }
