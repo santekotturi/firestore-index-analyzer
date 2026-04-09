@@ -1,0 +1,41 @@
+{
+  "name": "firestore-index-analyzer",
+  "version": "1.0.0",
+  "description": "Find and remove unused Firestore composite indexes by scanning your TypeScript codebase",
+  "keywords": ["firebase", "firestore", "indexes", "composite-index", "unused", "analyzer", "cli"],
+  "author": "Sante Kotturi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/santekotturi/firestore-index-analyzer"
+  },
+  "main": "./dist/index.js",
+  "bin": {
+    "firestore-index-analyzer": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "analyze": "tsx src/index.ts",
+    "analyze:purge": "tsx src/index.ts --purge",
+    "analyze:verbose": "tsx src/index.ts --verbose",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "ts-morph": "^23.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
