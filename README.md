@@ -36,7 +36,7 @@ firestore-index-analyzer
 firestore-index-analyzer --verbose
 
 # Remove unused indexes from firestore.indexes.json
-firestore-index-analyzer --purge
+firestore-index-analyzer --dangerously-purge
 ```
 
 ### Options
@@ -47,7 +47,7 @@ firestore-index-analyzer --purge
 | `--scan <dirs>` | Comma-separated directories to scan (resolved from CWD) | Entire `--root` |
 | `--indexes <path>` | Path to `firestore.indexes.json` | Auto-discovered |
 | `--output <path>` | Where to write `report.md` | `./report.md` |
-| `--purge` | Remove unused indexes from `firestore.indexes.json` in place | false |
+| `--dangerously-purge` | Remove unused indexes from `firestore.indexes.json` in place | false |
 | `--verbose` | Show matched queries for each used index | false |
 
 ### Monorepo example
@@ -71,8 +71,8 @@ firestore-index-analyzer \
 
 **Admin SDK (chained):**
 ```typescript
-firestore.collection('campaigns')
-  .where('teamId', '==', teamId)
+firestore.collection('orders')
+  .where('userId', '==', userId)
   .orderBy('createdAt', 'desc')
   .get()
 ```
@@ -80,15 +80,33 @@ firestore.collection('campaigns')
 **Client SDK (functional):**
 ```typescript
 query(
-  collection(db, 'campaigns'),
-  where('teamId', '==', teamId),
+  collection(db, 'orders'),
+  where('userId', '==', userId),
   orderBy('createdAt', 'desc'),
 )
+```
+
+**Dynamic Admin SDK (conditional filters):**
+```typescript
+let ref = db.collection('products');
+if (filters.status) ref = ref.where('status', '==', filters.status);
+if (sortBy === 'price') ref = ref.orderBy('price', 'desc');
+ref.get()
+```
+
+**Dynamic Client SDK (ternary spreads + reassignment):**
+```typescript
+let q = query(collection(db, 'posts'), where('authorId', '==', id));
+if (tag) q = query(q, where('tags', 'array-contains', tag));
+// or
+query(col, ...(published ? [where('status', '==', 'published')] : []))
 ```
 
 ### Conservative by design
 
 Only string literal collection names and field names are analyzed. If a query uses a variable or template literal for the collection name or field name, it is **skipped** — those indexes are never marked unused. This prevents false positives at the cost of some false negatives.
+
+For dynamic queries (conditional where/orderBy), the tool enumerates all possible combinations of active constraints and checks whether any of them would require the index. An index is only marked unused if *no* possible instantiation of any query needs it.
 
 `fieldOverrides` in `firestore.indexes.json` are never touched.
 
@@ -113,22 +131,22 @@ Scanned 847 files  ·  312 indexes  ·  203 queries extracted
 
 UNUSED INDEXES (43)
 
-  campaigns
-    [deletedAt ASC, isVisibleOnFeed ASC, teamId ASC, createdAt DESC]
-  creations
-    [campaignId ASC, loreConflictWarning ASC]
+  orders
+    [deletedAt ASC, status ASC, userId ASC, createdAt DESC]
+  events
+    [categoryId ASC, flagged ASC]
   ...
 
-Run with --purge to remove 43 indexes from firestore.indexes.json
+Run with --dangerously-purge to remove 43 indexes from firestore.indexes.json
 Report written to report.md
 ```
 
 ## Limitations
 
 - Only TypeScript files are analyzed (`.ts`, `.tsx`)
-- Dynamic collection/field names are conservatively skipped
-- Queries constructed across multiple function calls or stored in variables may not be detected
-- Does not analyze rules or security configurations
+- Dynamic collection/field names (variables, template literals) are conservatively skipped
+- Queries constructed via abstraction layers or helper wrappers may not be detected
+- Does not analyze security rules or `fieldOverrides`
 
 ## License
 

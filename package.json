@@ -23,7 +23,7 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "analyze": "tsx src/index.ts",
-    "analyze:purge": "tsx src/index.ts --purge",
+    "analyze:purge": "tsx src/index.ts --dangerously-purge",
     "analyze:verbose": "tsx src/index.ts --verbose",
     "prepublishOnly": "npm run build"
   },
