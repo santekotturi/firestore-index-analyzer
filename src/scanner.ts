@@ -1,14 +1,45 @@
-import { Project } from 'ts-morph';
-import { resolve } from 'path';
-import { readdirSync, statSync } from 'fs';
+import { resolve, join } from 'path';
+import { readdirSync, statSync, existsSync, readFileSync } from 'fs';
+import type { FileEntry } from './types.js';
 
 export const SKIP_DIRS = new Set([
   'node_modules', '.next', 'dist', 'build', '.git',
   '__pycache__', '.turbo', 'coverage', '.cache', 'out',
+  '.claude', '.vercel', '.firebase', '.ww-cache',
 ]);
 
-function walkDir(dir: string): string[] {
+/**
+ * A nested `.git` entry means one of:
+ *  - a git WORKTREE (`.git` file pointing at .../worktrees/...) — a parallel
+ *    checkout of the same repo; scanning it double-counts queries → skip
+ *  - a nested full CLONE (`.git` directory) — a separate codebase → skip
+ *  - a git SUBMODULE (`.git` file pointing at .../modules/...) — part of THIS
+ *    codebase (e.g. a shared types package) → scan it
+ */
+function shouldSkipNestedGit(dir: string): boolean {
+  const gitPath = join(dir, '.git');
+  if (!existsSync(gitPath)) return false;
+  try {
+    if (statSync(gitPath).isDirectory()) return true;
+    const content = readFileSync(gitPath, 'utf-8');
+    return !content.includes('/modules/');
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Recursively collect .ts/.tsx files under `dir`, skipping SKIP_DIRS and
+ * nested worktrees/clones (but NOT submodules — see shouldSkipNestedGit).
+ */
+function walkDir(dir: string, isRoot: boolean, skipped: string[]): string[] {
   const results: string[] = [];
+
+  if (!isRoot && shouldSkipNestedGit(dir)) {
+    skipped.push(dir);
+    return results;
+  }
+
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -25,10 +56,11 @@ function walkDir(dir: string): string[] {
       continue;
     }
     if (stat.isDirectory()) {
-      results.push(...walkDir(fullPath));
+      results.push(...walkDir(fullPath, false, skipped));
     } else if (
-      (fullPath.endsWith('.ts') || fullPath.endsWith('.tsx')) &&
-      !fullPath.endsWith('.d.ts')
+      /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(fullPath) &&
+      !fullPath.endsWith('.d.ts') &&
+      !/\.(min|bundle)\.js$/.test(fullPath)
     ) {
       results.push(fullPath);
     }
@@ -42,41 +74,39 @@ export interface DirStat {
 }
 
 export interface ScanResult {
-  project: Project;
+  files: FileEntry[];
   totalFiles: number;
   dirStats: DirStat[];
+  /** Nested worktrees/clones that were skipped (submodules are scanned) */
+  skippedNestedGit: string[];
 }
 
 /**
- * Build a ts-morph Project from the given list of directories.
- * Each entry in `scanDirs` is an absolute path to scan recursively.
+ * Collect source files (path + content) from the given directories.
+ * Contents are read once here and reused for the constant table,
+ * AST parsing, and the collection-reference scan.
  */
-export function buildProject(scanDirs: string[]): ScanResult {
-  const project = new Project({
-    skipAddingFilesFromTsConfig: true,
-    skipFileDependencyResolution: true,
-    compilerOptions: {
-      skipLibCheck: true,
-      allowJs: false,
-      noEmit: true,
-    },
-  });
-
+export function collectFiles(scanDirs: string[]): ScanResult {
+  const files: FileEntry[] = [];
   const dirStats: DirStat[] = [];
-  let totalFiles = 0;
+  const seen = new Set<string>();
+  const skippedNestedGit: string[] = [];
 
   for (const dir of scanDirs) {
-    const files = walkDir(dir);
-    for (const f of files) {
+    const paths = walkDir(dir, true, skippedNestedGit);
+    let count = 0;
+    for (const p of paths) {
+      if (seen.has(p)) continue;
+      seen.add(p);
       try {
-        project.addSourceFileAtPath(f);
+        files.push({ path: p, content: readFileSync(p, 'utf-8') });
+        count++;
       } catch {
-        // skip files that fail to parse (generated, malformed, etc.)
+        // unreadable file — skip
       }
     }
-    dirStats.push({ dir, files: files.length });
-    totalFiles += files.length;
+    dirStats.push({ dir, files: count });
   }
 
-  return { project, totalFiles, dirStats };
+  return { files, totalFiles: files.length, dirStats, skippedNestedGit };
 }

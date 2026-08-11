@@ -1,6 +1,5 @@
-import type { ExtractedQuery, IndexEntry, IndexStatus, MatchResult } from './types.js';
+import type { ExtractedQuery, IndexEntry, IndexStatus, MatchResult, FileEntry } from './types.js';
 
-const INEQUALITY_OPS = new Set(['!=', '<', '<=', '>', '>=', 'not-in']);
 const ARRAY_OPS = new Set(['array-contains', 'array-contains-any']);
 
 /**
@@ -126,9 +125,41 @@ function matchesQuery(index: IndexEntry, query: ExtractedQuery): boolean {
   return false;
 }
 
+/**
+ * Raw-text scan: which of the given collection names are referenced ANYWHERE
+ * in the scanned sources — as a quoted string ('x', "x", `x`) or as a path
+ * segment (/x' etc). Queries the parser couldn't model still leave this trail,
+ * so "referenced but unmatched" indexes are downgraded to `unverified`
+ * instead of `unused`.
+ */
+export function findReferencedCollections(
+  files: FileEntry[],
+  collectionNames: Iterable<string>,
+): Set<string> {
+  const remaining = new Map<string, RegExp>();
+  for (const name of collectionNames) {
+    if (remaining.has(name)) continue;
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    remaining.set(name, new RegExp(`["'\`/]${esc}["'\`/]`));
+  }
+
+  const referenced = new Set<string>();
+  for (const file of files) {
+    if (remaining.size === 0) break;
+    for (const [name, re] of remaining) {
+      if (re.test(file.content)) {
+        referenced.add(name);
+        remaining.delete(name);
+      }
+    }
+  }
+  return referenced;
+}
+
 export function matchIndexes(
   indexes: IndexEntry[],
   queries: ExtractedQuery[],
+  referencedCollections: Set<string>,
 ): MatchResult[] {
   // Include static queries that need an index AND dynamic queries that have
   // conditional constraints (they may need an index in some instantiation).
@@ -140,7 +171,11 @@ export function matchIndexes(
 
   return indexes.map(index => {
     const matchedQueries = candidates.filter(q => matchesQuery(index, q));
-    const status: IndexStatus = matchedQueries.length > 0 ? 'used' : 'unused';
+    const status: IndexStatus = matchedQueries.length > 0
+      ? 'used'
+      : referencedCollections.has(index.collectionGroup)
+        ? 'unverified'
+        : 'unused';
     return { index, status, matchedQueries };
   });
 }

@@ -1,11 +1,11 @@
 import { writeFileSync } from 'fs';
 import { relative } from 'path';
 import chalk from 'chalk';
-import type { MatchResult, ExtractedQuery, IndexEntry } from './types.js';
+import type { MatchResult, ExtractedQuery, IndexEntry, IndexStatus } from './types.js';
 import type { DirStat } from './scanner.js';
 
-function formatIndexFields(result: MatchResult): string {
-  return result.index.fields
+function formatIndexFields(index: IndexEntry): string {
+  return index.fields
     .map(f => {
       if (f.arrayConfig) return `${f.fieldPath} ARRAY`;
       const dir = f.order?.toLowerCase() === 'descending' ? 'DESC' : 'ASC';
@@ -14,31 +14,38 @@ function formatIndexFields(result: MatchResult): string {
     .join(', ');
 }
 
-function formatQuerySummary(q: ExtractedQuery): string {
+function formatQuerySummary(q: ExtractedQuery, root: string): string {
   const parts: string[] = [];
   for (const w of q.whereClauses) parts.push(`where(${w.field} ${w.op})`);
   for (const o of q.orderByClauses) parts.push(`orderBy(${o.field} ${o.dir})`);
-  const rel = q.sourceFile.split('/wideworlds-')[1] ?? q.sourceFile;
-  return `    ${parts.join(', ')}  ← ${rel}:${q.sourceLine}`;
+  for (const w of q.conditionalWhereClauses ?? []) parts.push(`?where(${w.field} ${w.op})`);
+  for (const o of q.conditionalOrderByClauses ?? []) parts.push(`?orderBy(${o.field} ${o.dir})`);
+  return `${parts.join(', ')}  ← ${shortPath(q.sourceFile, root)}:${q.sourceLine}`;
 }
 
-/** Reconstruct the compact JSON snippet for an index as it appears in firestore.indexes.json */
+/** Compact JSON snippet for an index as it appears in firestore.indexes.json */
 function indexToJson(index: IndexEntry): string {
   const obj = {
     collectionGroup: index.collectionGroup,
     queryScope: index.queryScope,
-    fields: index.fields.map(f => {
-      if (f.arrayConfig) return { fieldPath: f.fieldPath, arrayConfig: f.arrayConfig };
-      return { fieldPath: f.fieldPath, order: f.order ?? 'ASCENDING' };
-    }),
+    fields: index.fields,
   };
   return JSON.stringify(obj);
 }
 
-/** Relative path from root, falling back to stripping common wideworlds- prefix */
-function shortPath(filePath: string): string {
-  const m = filePath.match(/\/(wideworlds[^/].*)/);
-  return m ? m[1] : filePath;
+function shortPath(filePath: string, root: string): string {
+  const rel = relative(root, filePath);
+  return rel.startsWith('..') ? filePath : rel;
+}
+
+function groupByCollection(results: MatchResult[]): Map<string, MatchResult[]> {
+  const byCollection = new Map<string, MatchResult[]>();
+  for (const r of results) {
+    const key = r.index.collectionGroup;
+    if (!byCollection.has(key)) byCollection.set(key, []);
+    byCollection.get(key)!.push(r);
+  }
+  return byCollection;
 }
 
 export function printReport(
@@ -48,9 +55,13 @@ export function printReport(
   dirStats: DirStat[],
   verbose: boolean,
   outputPath: string,
+  root: string,
 ): void {
-  const used = results.filter(r => r.status === 'used');
-  const unused = results.filter(r => r.status === 'unused');
+  const byStatus: Record<IndexStatus, MatchResult[]> = {
+    used: results.filter(r => r.status === 'used'),
+    unverified: results.filter(r => r.status === 'unverified'),
+    unused: results.filter(r => r.status === 'unused'),
+  };
 
   // Build collection → source files map from ALL extracted queries
   const collectionFiles = new Map<string, Set<string>>();
@@ -65,53 +76,44 @@ export function printReport(
     `Scanned ${chalk.cyan(totalFiles)} files  ·  ${chalk.cyan(results.length)} indexes  ·  ${chalk.cyan(allQueries.length)} queries extracted`,
   );
   console.log('');
-  console.log(`  ${chalk.green('●')} USED   ${String(used.length).padStart(4)}   covered by at least 1 query`);
-  console.log(`  ${chalk.red('●')} UNUSED ${String(unused.length).padStart(4)}   no matching query found`);
+  console.log(`  ${chalk.green('●')} USED       ${String(byStatus.used.length).padStart(4)}   covered by at least 1 extracted query`);
+  console.log(`  ${chalk.yellow('●')} UNVERIFIED ${String(byStatus.unverified.length).padStart(4)}   collection referenced in code, but no matching query parsed — review by hand`);
+  console.log(`  ${chalk.red('●')} UNUSED     ${String(byStatus.unused.length).padStart(4)}   collection never referenced in any scanned repo`);
   console.log('');
 
-  if (unused.length > 0) {
-    console.log(chalk.bold.red(`UNUSED INDEXES (${unused.length})`));
-    console.log(chalk.dim('  Review the files below before removing any index.\n'));
+  for (const status of ['unused', 'unverified'] as const) {
+    const items = byStatus[status];
+    if (items.length === 0) continue;
+    const color = status === 'unused' ? chalk.red : chalk.yellow;
+    console.log(color.bold(`${status.toUpperCase()} INDEXES (${items.length})`));
+    console.log('');
 
-    // Group by collection
-    const byCollection = new Map<string, MatchResult[]>();
-    for (const r of unused) {
-      const key = r.index.collectionGroup;
-      if (!byCollection.has(key)) byCollection.set(key, []);
-      byCollection.get(key)!.push(r);
-    }
+    for (const [collection, group] of [...groupByCollection(items).entries()].sort()) {
+      const scope = group[0].index.queryScope === 'COLLECTION_GROUP' ? chalk.dim(' [group]') : '';
+      console.log(chalk.yellow(`  ── ${collection} (${group.length})${scope}`));
 
-    for (const [collection, items] of [...byCollection.entries()].sort()) {
       const files = [...(collectionFiles.get(collection) ?? [])].sort();
-      const scope = items[0].index.queryScope === 'COLLECTION_GROUP' ? chalk.dim(' [group]') : '';
-
-      console.log(chalk.yellow(`  ── ${collection} (${items.length})${scope}`));
-
       if (files.length > 0) {
-        console.log(chalk.dim('  Files to review:'));
-        for (const f of files) {
-          console.log(chalk.dim(`    → ${shortPath(f)}`));
-        }
-      } else {
-        console.log(chalk.dim('  (no query files found for this collection)'));
+        console.log(chalk.dim('  Query files (parsed but none matched these indexes):'));
+        for (const f of files.slice(0, 8)) console.log(chalk.dim(`    → ${shortPath(f, root)}`));
+        if (files.length > 8) console.log(chalk.dim(`    … and ${files.length - 8} more`));
       }
 
-      console.log('');
-      for (const item of items) {
-        console.log(`  ${chalk.red(indexToJson(item.index))}`);
+      for (const item of group) {
+        console.log(`  ${color(indexToJson(item.index))} ${chalk.dim(`[${item.index.sources.join(', ')}]`)}`);
       }
       console.log('');
     }
   }
 
-  if (verbose && used.length > 0) {
-    console.log(chalk.bold.green(`USED INDEXES (${used.length})`));
+  if (verbose && byStatus.used.length > 0) {
+    console.log(chalk.bold.green(`USED INDEXES (${byStatus.used.length})`));
     console.log('');
-    for (const r of used) {
-      console.log(`  ${chalk.green(r.index.collectionGroup)}`);
-      console.log(`    [${formatIndexFields(r)}]`);
+    for (const r of byStatus.used) {
+      console.log(`  ${chalk.green(r.index.collectionGroup)}  ${chalk.dim(`[${r.index.sources.join(', ')}]`)}`);
+      console.log(`    [${formatIndexFields(r.index)}]`);
       for (const q of r.matchedQueries.slice(0, 3)) {
-        console.log(formatQuerySummary(q));
+        console.log(`    ${formatQuerySummary(q, root)}`);
       }
       if (r.matchedQueries.length > 3) {
         console.log(chalk.dim(`    … and ${r.matchedQueries.length - 3} more`));
@@ -120,12 +122,9 @@ export function printReport(
     console.log('');
   }
 
-  if (unused.length > 0) {
-    console.log(chalk.dim(`Run with --dangerously-purge to remove ${unused.length} indexes from firestore.indexes.json`));
-  } else {
-    console.log(chalk.green('No unused indexes found.'));
+  if (byStatus.unused.length > 0) {
+    console.log(chalk.dim(`Run with --dangerously-purge to remove the ${byStatus.unused.length} UNUSED indexes from file sources`));
   }
-
   console.log(chalk.dim(`Report written to ${outputPath}`));
   console.log('');
 
@@ -135,56 +134,55 @@ export function printReport(
   lines.push('');
   lines.push(`**Scanned:** ${totalFiles} files · ${results.length} indexes · ${allQueries.length} queries extracted`);
   lines.push('');
-  lines.push(`| Status | Count |`);
-  lines.push(`|--------|-------|`);
-  lines.push(`| Used   | ${used.length} |`);
-  lines.push(`| Unused | ${unused.length} |`);
+  for (const d of dirStats) lines.push(`- \`${d.dir}\` — ${d.files} files`);
+  lines.push('');
+  lines.push(`| Status | Count | Meaning |`);
+  lines.push(`|--------|-------|---------|`);
+  lines.push(`| Used | ${byStatus.used.length} | covered by at least 1 extracted query |`);
+  lines.push(`| Unverified | ${byStatus.unverified.length} | collection referenced in code, but no matching query parsed — review by hand |`);
+  lines.push(`| Unused | ${byStatus.unused.length} | collection never referenced in any scanned repo — safe to delete |`);
   lines.push('');
 
-  if (unused.length > 0) {
-    lines.push('## Unused Indexes');
+  for (const status of ['unused', 'unverified'] as const) {
+    const items = byStatus[status];
+    if (items.length === 0) continue;
+    lines.push(`## ${status === 'unused' ? 'Unused' : 'Unverified'} Indexes (${items.length})`);
     lines.push('');
-    lines.push('Review the files listed under each collection before removing any index.');
+    lines.push(status === 'unused'
+      ? 'The collection name never appears in any scanned source file.'
+      : 'The collection IS referenced in code, but no parseable query matched these exact indexes. Review by hand before deleting.');
     lines.push('');
 
-    const byCollection = new Map<string, MatchResult[]>();
-    for (const r of unused) {
-      const key = r.index.collectionGroup;
-      if (!byCollection.has(key)) byCollection.set(key, []);
-      byCollection.get(key)!.push(r);
-    }
-
-    for (const [collection, items] of [...byCollection.entries()].sort()) {
-      const files = [...(collectionFiles.get(collection) ?? [])].sort();
-      const scope = items[0].index.queryScope === 'COLLECTION_GROUP' ? ' *(collectionGroup)*' : '';
-
-      lines.push(`### ${collection}${scope} — ${items.length} unused`);
+    for (const [collection, group] of [...groupByCollection(items).entries()].sort()) {
+      const scope = group[0].index.queryScope === 'COLLECTION_GROUP' ? ' *(collectionGroup)*' : '';
+      lines.push(`### ${collection}${scope} — ${group.length} ${status}`);
       lines.push('');
 
+      const files = [...(collectionFiles.get(collection) ?? [])].sort();
       if (files.length > 0) {
-        lines.push('**Files to review:**');
-        for (const f of files) lines.push(`- \`${shortPath(f)}\``);
+        lines.push('**Query files (parsed but none matched these indexes):**');
+        for (const f of files) lines.push(`- \`${shortPath(f, root)}\``);
         lines.push('');
       }
 
-      lines.push('**Indexes to remove:**');
       lines.push('```json');
-      for (const item of items) {
-        lines.push(indexToJson(item.index));
-      }
+      for (const item of group) lines.push(indexToJson(item.index));
       lines.push('```');
+      lines.push(`Sources: ${[...new Set(group.flatMap(g => g.index.sources))].join(', ')}`);
       lines.push('');
     }
   }
 
-  if (verbose && used.length > 0) {
-    lines.push('## Used Indexes');
+  if (byStatus.used.length > 0) {
+    lines.push(`## Used Indexes (${byStatus.used.length})`);
     lines.push('');
-    lines.push('| Collection | Fields | Matched Queries |');
-    lines.push('|------------|--------|-----------------|');
-    for (const r of used) {
-      const fields = formatIndexFields(r);
-      lines.push(`| ${r.index.collectionGroup} | ${fields} | ${r.matchedQueries.length} |`);
+    lines.push('| Collection | Fields | Sources | Matched Queries | Example |');
+    lines.push('|------------|--------|---------|-----------------|---------|');
+    for (const r of byStatus.used) {
+      const example = r.matchedQueries[0]
+        ? `\`${shortPath(r.matchedQueries[0].sourceFile, root)}:${r.matchedQueries[0].sourceLine}\``
+        : '';
+      lines.push(`| ${r.index.collectionGroup} | ${formatIndexFields(r.index)} | ${r.index.sources.join(', ')} | ${r.matchedQueries.length} | ${example} |`);
     }
     lines.push('');
   }

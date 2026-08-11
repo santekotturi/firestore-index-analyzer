@@ -1,38 +1,62 @@
 import { readFileSync, writeFileSync } from 'fs';
 import chalk from 'chalk';
-import type { MatchResult } from './types.js';
+import type { MatchResult, IndexField } from './types.js';
+import { normalizeFields, indexKey } from './indexLoader.js';
 
-export function purgeUnusedIndexes(indexesPath: string, results: MatchResult[]): number {
-  const unusedOriginalIndexes = new Set(
-    results
-      .filter(r => r.status === 'unused')
-      .map(r => r.index._originalIndex),
+/**
+ * Remove `unused` indexes from the given index FILES (live sources can't be
+ * purged from here — deploy the purged file instead). Entries are matched by
+ * normalized key, so formatting differences and implicit __name__ suffixes
+ * don't matter. Only `unused` (collection never referenced in any scanned
+ * repo) is ever purged; `unverified` requires human review.
+ */
+export function purgeUnusedIndexes(
+  filePathByLabel: Map<string, string>,
+  results: MatchResult[],
+): number {
+  const unusedKeys = new Set(
+    results.filter(r => r.status === 'unused').map(r => r.index.key),
   );
 
-  if (unusedOriginalIndexes.size === 0) {
-    console.log(chalk.green('Nothing to purge — all indexes are in use.'));
+  if (unusedKeys.size === 0) {
+    console.log(chalk.green('Nothing to purge — no unused indexes.'));
     return 0;
   }
 
-  // Re-read to preserve original formatting as much as possible
-  const content = readFileSync(indexesPath, 'utf-8');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = JSON.parse(content) as Record<string, any>;
+  let totalRemoved = 0;
 
-  const originalCount = Array.isArray(raw.indexes) ? raw.indexes.length : 0;
+  for (const [label, filePath] of filePathByLabel) {
+    const content = readFileSync(filePath, 'utf-8');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let raw: Record<string, any>;
+    try {
+      raw = JSON.parse(content);
+    } catch {
+      raw = JSON.parse(content.replace(/,\s*([\]}])/g, '$1'));
+    }
 
-  raw.indexes = (raw.indexes as unknown[]).filter(
-    (_: unknown, i: number) => !unusedOriginalIndexes.has(i),
-  );
+    if (!Array.isArray(raw.indexes)) continue;
+    const originalCount = raw.indexes.length;
 
-  const newCount = raw.indexes.length;
-  const removed = originalCount - newCount;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    raw.indexes = raw.indexes.filter((entry: any) => {
+      const fields = normalizeFields((entry.fields ?? []) as IndexField[]);
+      const key = indexKey(entry.collectionGroup, entry.queryScope ?? 'COLLECTION', fields);
+      return !unusedKeys.has(key);
+    });
 
-  writeFileSync(indexesPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+    const removed = originalCount - raw.indexes.length;
+    if (removed > 0) {
+      writeFileSync(filePath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+      console.log(chalk.green(`Purged ${removed} unused indexes from ${label} (${filePath})`));
+      console.log(chalk.dim(`  Before: ${originalCount}  After: ${raw.indexes.length}`));
+      totalRemoved += removed;
+    }
+  }
 
-  console.log(chalk.green(`Purged ${removed} unused indexes from ${indexesPath}`));
-  console.log(chalk.dim(`  Before: ${originalCount} indexes`));
-  console.log(chalk.dim(`  After:  ${newCount} indexes`));
+  if (totalRemoved === 0) {
+    console.log(chalk.yellow('No unused indexes found in any FILE source (live sources are not purgeable).'));
+  }
 
-  return removed;
+  return totalRemoved;
 }

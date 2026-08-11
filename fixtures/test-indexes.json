@@ -1,0 +1,14 @@
+{
+  "indexes": [
+    {"collectionGroup": "fanEdits", "queryScope": "COLLECTION", "fields": [{"fieldPath": "teamId", "order": "ASCENDING"}, {"fieldPath": "createdAt", "order": "DESCENDING"}, {"fieldPath": "__name__", "order": "DESCENDING"}]},
+    {"collectionGroup": "teamPlayers", "queryScope": "COLLECTION", "fields": [{"fieldPath": "isCreator", "order": "ASCENDING"}, {"fieldPath": "creationCount", "order": "DESCENDING"}]},
+    {"collectionGroup": "clips", "queryScope": "COLLECTION", "fields": [{"fieldPath": "teamId", "order": "ASCENDING"}, {"fieldPath": "deletedAt", "order": "ASCENDING"}, {"fieldPath": "subjects", "arrayConfig": "CONTAINS"}, {"fieldPath": "createdAt", "order": "DESCENDING"}]},
+    {"collectionGroup": "artifacts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "teamId", "order": "ASCENDING"}, {"fieldPath": "createdBy", "order": "ASCENDING"}, {"fieldPath": "createdAt", "order": "DESCENDING"}]},
+    {"collectionGroup": "creatorSignups", "queryScope": "COLLECTION", "fields": [{"fieldPath": "status", "order": "ASCENDING"}, {"fieldPath": "createdAt", "order": "DESCENDING"}]},
+    {"collectionGroup": "playerRewards", "queryScope": "COLLECTION_GROUP", "fields": [{"fieldPath": "date", "order": "ASCENDING"}, {"fieldPath": "status", "order": "ASCENDING"}]},
+    {"collectionGroup": "campaigns", "queryScope": "COLLECTION", "fields": [{"fieldPath": "teamId", "order": "ASCENDING"}, {"fieldPath": "status", "order": "ASCENDING"}, {"fieldPath": "createdAt", "order": "DESCENDING"}]},
+    {"collectionGroup": "ghostCollection", "queryScope": "COLLECTION", "fields": [{"fieldPath": "a", "order": "ASCENDING"}, {"fieldPath": "b", "order": "ASCENDING"}]},
+    {"collectionGroup": "clips", "queryScope": "COLLECTION", "fields": [{"fieldPath": "wrongField", "order": "ASCENDING"}, {"fieldPath": "otherWrong", "order": "ASCENDING"}]}
+  ],
+  "fieldOverrides": []
+}

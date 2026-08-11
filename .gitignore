@@ -2,3 +2,10 @@ node_modules/
 dist/
 report.md
 *.tgz
+
+# analysis artifacts
+report.md
+baseline-report.md
+full-report.md
+master.indexes.json
+prod-live.indexes.json
