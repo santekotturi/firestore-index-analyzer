@@ -25,7 +25,7 @@ export interface ExtractedQuery {
   isCollectionGroup: boolean;
   whereClauses: WhereClause[];
   orderByClauses: OrderByClause[];
-  /** Constraints that are conditionally applied (e.g. inside `if` blocks, ternary spreads) */
+  /** Constraints that are conditionally applied (e.g. inside `if` blocks, ternary spreads, .push() in conditionals) */
   conditionalWhereClauses?: WhereClause[];
   conditionalOrderByClauses?: OrderByClause[];
   sourceFile: string;
@@ -41,20 +41,40 @@ export interface IndexField {
 export interface IndexEntry {
   collectionGroup: string;
   queryScope: 'COLLECTION' | 'COLLECTION_GROUP';
+  /** Normalized fields: uppercase order, default trailing __name__ stripped */
   fields: IndexField[];
-  _originalIndex: number;
+  /** Canonical dedup key derived from collectionGroup + queryScope + normalized fields */
+  key: string;
+  /** Labels of the sources this index came from (e.g. 'live:my-project', 'fancuts') */
+  sources: string[];
 }
 
-export interface IndexesFile {
-  indexes: IndexEntry[];
+export interface FieldOverrideEntry {
+  collectionGroup: string;
+  fieldPath: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  _raw: Record<string, any>;
+  raw: Record<string, any>;
+  sources: string[];
 }
 
-export type IndexStatus = 'used' | 'unused';
+export interface LoadedIndexes {
+  indexes: IndexEntry[];
+  fieldOverrides: FieldOverrideEntry[];
+  /** Source labels in the order they were loaded */
+  sourceLabels: string[];
+  /** label → file path (absent for live project fetches) */
+  filePathByLabel: Map<string, string>;
+}
+
+export type IndexStatus = 'used' | 'unverified' | 'unused';
 
 export interface MatchResult {
   index: IndexEntry;
   status: IndexStatus;
   matchedQueries: ExtractedQuery[];
+}
+
+export interface FileEntry {
+  path: string;
+  content: string;
 }
